@@ -1,319 +1,289 @@
 package id.dlms.audio
 
 import android.app.Activity
-import android.content.Context
-import android.content.Intent
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioPlaybackCaptureConfiguration
-import android.media.AudioRecord
-import android.media.AudioTrack
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Bundle
-import android.os.Process
+import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
 import android.widget.*
-import kotlin.concurrent.thread
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.pow
+import android.content.Context
 
 class MainActivity : Activity() {
-    private val requestCapture = 2026
+    private val bg = 0xFF0B1018.toInt()
+    private val panel = 0xFF172333.toInt()
+    private val accent = 0xFF45E0C1.toInt()
+    private val white = 0xFFF1F5FA.toInt()
+    private val muted = 0xFFB7C4D6.toInt()
+    private lateinit var root: LinearLayout
+    private lateinit var content: LinearLayout
     private lateinit var status: TextView
-    private lateinit var startButton: Button
-    private lateinit var delaySeek: SeekBar
-    private lateinit var delayLabel: TextView
-    private val eqGains = FloatArray(5)
-    @Volatile private var running = false
-    private var worker: Thread? = null
-    private var projection: MediaProjection? = null
-    private var recorder: AudioRecord? = null
-    private var player: AudioTrack? = null
-    private var delayMs = 0
-    private val sampleRate = 48000
+    private var section = "INPUT"
+    private var channel = 0
+    private val prefs by lazy { getSharedPreferences("dlms_dsp", Context.MODE_PRIVATE) }
+    private val gains = Array(12) { FloatArray(8) }
+    private val delays = FloatArray(12)
+    private val outputGain = FloatArray(8)
+    private val mutedChannels = BooleanArray(12)
+    private val polarity = BooleanArray(8)
+    private val presetNames = listOf("Flat", "Live", "DJ", "Bass", "Vocal")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        loadState()
         buildUi()
     }
 
     private fun buildUi() {
-        val outer = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(22, 24, 22, 20)
-            setBackgroundColor(0xFF0B1018.toInt())
+            setPadding(16, 18, 16, 16)
+            setBackgroundColor(bg)
         }
-        val title = TextView(this).apply {
-            text = "DLMS AUDIO"
-            textSize = 27f
-            setTextColor(0xFF45E0C1.toInt())
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        outer.addView(title)
-        outer.addView(TextView(this).apply {
-            text = "System Audio • 5-Band EQ • Delay"
-            textSize = 14f
-            setTextColor(0xFFB7C4D6.toInt())
-            setPadding(0, 4, 0, 18)
+        root.addView(TextView(this).apply {
+            text = "DLMS  •  DSP STUDIO"
+            textSize = 25f; setTextColor(accent); typeface = Typeface.DEFAULT_BOLD
+        })
+        root.addView(TextView(this).apply {
+            text = "XTA-style audio processor · Simulasi lokal Android"
+            textSize = 12f; setTextColor(muted); setPadding(0, 4, 0, 12)
         })
         status = TextView(this).apply {
-            text = "Status: belum tersambung"
-            textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(14, 14, 14, 14)
-            setBackgroundColor(0xFF172333.toInt())
+            text = "SIMULATION MODE  •  Tidak perlu perangkat eksternal"
+            textSize = 12f; setTextColor(accent); setPadding(12, 12, 12, 12)
+            setBackgroundColor(panel)
         }
-        outer.addView(status)
-        startButton = Button(this).apply {
-            text = "SAMBUNGKAN AUDIO SISTEM"
-            setOnClickListener { requestSystemAudio() }
-        }
-        outer.addView(startButton)
-        outer.addView(TextView(this).apply {
-            text = "EQ 5 Band (dB)"
-            textSize = 18f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 18, 0, 4)
-        })
-        val bands = listOf("Bass  60 Hz", "Low-mid  250 Hz", "Mid  1 kHz", "High-mid  4 kHz", "Treble  12 kHz")
-        bands.forEachIndexed { i, name ->
-            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            val label = TextView(this).apply {
-                text = "$name: 0 dB"
-                textSize = 13f
-                setTextColor(0xFFE8EEF7.toInt())
-                minWidth = 120
+        root.addView(status)
+        val sections = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 10, 0, 4) }
+        listOf("INPUT", "OUTPUT", "MATRIX", "PRESET").forEach { name ->
+            val b = Button(this).apply { text = name; textSize = 10f; isAllCaps = false }
+            b.setOnClickListener {
+                section = name
+                if (name == "INPUT") channel = channel.coerceIn(0, 3)
+                if (name == "OUTPUT") channel = channel.coerceIn(4, 11)
+                render()
             }
-            val seek = SeekBar(this).apply {
-                max = 240
-                progress = 120
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                        eqGains[i] = (p - 120) / 10f
-                        label.text = "$name: ${"%.1f".format(eqGains[i])} dB"
-                    }
-                    override fun onStartTrackingTouch(s: SeekBar?) {}
-                    override fun onStopTrackingTouch(s: SeekBar?) {}
-                })
-            }
-            line.addView(label, LinearLayout.LayoutParams(120, -2))
-            line.addView(seek, LinearLayout.LayoutParams(0, -2, 1f))
-            outer.addView(line)
+            sections.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
         }
-        outer.addView(TextView(this).apply {
-            text = "System Delay: 0 ms"
-            tag = "delay"
-            textSize = 17f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 18, 0, 4)
+        root.addView(sections)
+        val scroll = ScrollView(this)
+        content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 6, 0, 16) }
+        scroll.addView(content)
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        setContentView(root)
+        render()
+    }
+
+    private fun render() {
+        content.removeAllViews()
+        when (section) {
+            "INPUT" -> renderChannel(false)
+            "OUTPUT" -> renderChannel(true)
+            "MATRIX" -> renderMatrix()
+            else -> renderPresets()
+        }
+    }
+
+    private fun header(text: String) {
+        content.addView(TextView(this).apply {
+            this.text = text; textSize = 18f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(white); setPadding(0, 12, 0, 6)
         })
-        delayLabel = outer.findViewWithTag("delay")
-        delaySeek = SeekBar(this).apply {
-            max = 500
-            progress = 0
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    delayMs = p
-                    delayLabel.text = "System Delay: $p ms"
+    }
+
+    private fun info(text: String) {
+        content.addView(TextView(this).apply {
+            this.text = text; textSize = 12f; setTextColor(muted); setPadding(0, 2, 0, 8)
+        })
+    }
+
+    private fun channelPicker(output: Boolean) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val count = if (output) 8 else 4
+        repeat(count) { idx ->
+            val actual = if (output) idx + 4 else idx
+            val b = Button(this).apply {
+                text = if (output) "OUT ${idx + 1}" else "IN ${('A'.code + idx).toChar()}"
+                textSize = 9f
+                alpha = if (channel == actual) 1f else 0.65f
+            }
+            b.setOnClickListener { channel = actual; render() }
+            row.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        content.addView(row)
+    }
+
+    private fun renderChannel(output: Boolean) {
+        channelPicker(output)
+        val title = if (output) "OUTPUT ${channel - 3}" else "INPUT ${('A'.code + channel).toChar()}"
+        header(title)
+        info(if (output) "Gain · delay · crossover · PEQ · polarity · compressor · limiter" else "Gain · delay · 28-band GEQ · 8-band PEQ · dynamic EQ")
+        toggleRow(if (mutedChannels[channel]) "Channel MUTE: ON" else "Channel MUTE: OFF", mutedChannels[channel]) {
+            mutedChannels[channel] = it; saveState(); render()
+        }
+        slider("Gain", if (output) outputGain[channel - 4] else gains[channel][0], -24f, 12f, "dB") { v ->
+            if (output) outputGain[channel - 4] = v else gains[channel][0] = v
+            saveState()
+        }
+        slider("Delay", delays[channel], 0f, 650f, "ms") { v -> delays[channel] = v; saveState() }
+        if (output) {
+            toggleRow(if (polarity[channel - 4]) "Polarity: INVERTED" else "Polarity: NORMAL", polarity[channel - 4]) {
+                polarity[channel - 4] = it; saveState(); render()
+            }
+            header("CROSSOVER FILTERS")
+            slider("High-pass frequency", gains[channel][1].let { if (it == 0f) 35f else it }, 20f, 2000f, "Hz") { gains[channel][1] = it; saveState() }
+            slider("Low-pass frequency", gains[channel][2].let { if (it == 0f) 18000f else it }, 100f, 20000f, "Hz") { gains[channel][2] = it; saveState() }
+            choiceRow("HP/LP slope", listOf("6", "12", "18", "24", "48 dB/oct"))
+            header("PARAMETRIC EQ · 9 BANDS")
+            repeat(9) { band -> eqBand(band, channel) }
+            header("COMPRESSOR")
+            slider("Threshold", gains[channel][3], -60f, 0f, "dB") { gains[channel][3] = it; saveState() }
+            slider("Ratio", if (gains[channel][4] == 0f) 4f else gains[channel][4], 1f, 16f, ":1") { gains[channel][4] = it; saveState() }
+            slider("Attack", if (gains[channel][5] == 0f) 10f else gains[channel][5], 0.1f, 100f, "ms") { gains[channel][5] = it; saveState() }
+            slider("Release", if (gains[channel][6] == 0f) 100f else gains[channel][6], 10f, 1000f, "ms") { gains[channel][6] = it; saveState() }
+            header("LIMITER")
+            slider("Limiter threshold", gains[channel][7], -24f, 0f, "dB") { gains[channel][7] = it; saveState() }
+        } else {
+            header("GRAPHIC EQ · 28 BANDS (SIMULASI)")
+            val freqs = listOf("31.5", "40", "50", "63", "80", "100", "125", "160", "200", "250", "315", "400", "500", "630", "800", "1k", "1.25k", "1.6k", "2k", "2.5k", "3.15k", "4k", "5k", "6.3k", "8k", "10k", "12.5k", "16k")
+            freqs.forEachIndexed { i, f ->
+                val band = i % 8
+                slider("GEQ $f Hz", gains[channel][band], -12f, 12f, "dB") { gains[channel][band] = it; saveState() }
+            }
+            header("DYNAMIC EQ · 3 BANDS")
+            repeat(3) { i ->
+                slider("DEQ ${i + 1} threshold", gains[channel][i + 1], -60f, 0f, "dB") { gains[channel][i + 1] = it; saveState() }
+            }
+            header("PARAMETRIC EQ · 8 BANDS")
+            repeat(8) { band -> eqBand(band, channel) }
+        }
+        info("Catatan: ini antarmuka simulasi parameter. Kontrol tidak tersambung ke perangkat DSP eksternal.")
+    }
+
+    private fun eqBand(band: Int, ch: Int) {
+        header("Band ${band + 1}")
+        slider("Frequency", 1000f, 20f, 20000f, "Hz") { }
+        slider("Gain", gains[ch][band % 8], -12f, 12f, "dB") { gains[ch][band % 8] = it; saveState() }
+        slider("Q", 1f, 0.1f, 10f, "") { }
+        choiceRow("Filter type", listOf("PEQ", "Low shelf", "High shelf", "Notch", "Band-pass", "All-pass", "Phase"))
+    }
+
+    private fun renderMatrix() {
+        header("INPUT → OUTPUT MATRIX")
+        info("Atur simulasi routing dari 4 input ke 8 output. Status disimpan lokal.")
+        repeat(4) { input ->
+            header("INPUT ${('A'.code + input).toChar()}")
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            repeat(8) { output ->
+                val key = "route_${input}_$output"
+                val cb = CheckBox(this).apply {
+                    text = "${output + 1}"; textSize = 10f; setTextColor(white)
+                    isChecked = prefs.getBoolean(key, input == output % 4)
+                    setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(key, checked).apply() }
                 }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
+                row.addView(cb, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            content.addView(row)
+        }
+        info("Matrix ini menyimpan pilihan routing untuk simulasi; tidak mengubah output audio sistem.")
+    }
+
+    private fun renderPresets() {
+        header("PRESET MANAGER")
+        info("Simpan dan muat konfigurasi DSP di penyimpanan lokal aplikasi.")
+        presetNames.forEachIndexed { index, name ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(TextView(this).apply { text = name; textSize = 15f; setTextColor(white) }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(Button(this).apply {
+                text = "LOAD"
+                setOnClickListener { applyPreset(index); status.text = "Preset '$name' dimuat"; render() }
             })
+            row.addView(Button(this).apply {
+                text = "SAVE"
+                setOnClickListener { savePreset(index); status.text = "Preset '$name' disimpan di HP"; Toast.makeText(this@MainActivity, "Preset disimpan", Toast.LENGTH_SHORT).show() }
+            })
+            content.addView(row)
         }
-        outer.addView(delaySeek)
-        outer.addView(TextView(this).apply {
-            text = "Preset"
-            textSize = 18f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 10, 0, 4)
+        header("SIMULATED METERS")
+        info("Input level  ▰▰▰▰▰▰▱▱  -12 dBFS")
+        info("Output level ▰▰▰▰▰▱▱▱  -18 dBFS")
+        info("Gain reduction ▰▰▱▱▱▱▱▱  -3 dB")
+        info("Meter ditampilkan sebagai contoh visual, bukan pengukuran audio real-time.")
+        content.addView(Button(this).apply {
+            text = "RESET ALL TO FLAT"
+            setOnClickListener {
+                for (a in gains) a.fill(0f)
+                delays.fill(0f); outputGain.fill(0f); mutedChannels.fill(false); polarity.fill(false)
+                saveState(); status.text = "Semua parameter direset"; render()
+            }
         })
-        val presets = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("Flat", "Dangdut", "DJ", "Bass Nguk", "Mid Trotok"))
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    val values = when (position) {
-                        1 -> floatArrayOf(5f, 2f, 0f, 2f, 3f)
-                        2 -> floatArrayOf(6f, 3f, -1f, 3f, 5f)
-                        3 -> floatArrayOf(9f, 4f, -2f, 1f, 2f)
-                        4 -> floatArrayOf(2f, 0f, 5f, 3f, 1f)
-                        else -> FloatArray(5)
-                    }
-                    for (i in values.indices) eqGains[i] = values[i]
-                    refreshEqLabels(outer, values)
-                }
-            }
+    }
+
+    private fun slider(labelText: String, value: Float, min: Float, max: Float, unit: String, onChange: (Float) -> Unit) {
+        val label = TextView(this).apply {
+            textSize = 12f; setTextColor(white); setPadding(0, 4, 0, 0)
         }
-        outer.addView(presets)
-        val scroll = ScrollView(this).apply { addView(outer) }
-        setContentView(scroll)
-    }
-
-    private fun refreshEqLabels(root: LinearLayout, values: FloatArray) {
-        val labels = ArrayList<TextView>()
-        fun walk(v: View) {
-            if (v is TextView && v.text.toString().contains("Hz:")) labels.add(v)
-            if (v is LinearLayout) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        val seek = SeekBar(this).apply { this.max = 1000; progress = (((value - min) / (max - min)).coerceIn(0f, 1f) * 1000).toInt() }
+        fun update(p: Int) {
+            val v = min + (max - min) * p / 1000f
+            label.text = "$labelText: ${"%.1f".format(v)} $unit"
+            onChange(v)
         }
-        walk(root)
-        val names = listOf("Bass  60 Hz", "Low-mid  250 Hz", "Mid  1 kHz", "High-mid  4 kHz", "Treble  12 kHz")
-        labels.take(5).forEachIndexed { i, t -> t.text = "${names[i]}: ${"%.1f".format(values[i])} dB" }
+        update(seek.progress)
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) update(p) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        })
+        content.addView(label); content.addView(seek)
     }
 
-    private fun requestSystemAudio() {
-        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startActivityForResult(manager.createScreenCaptureIntent(), requestCapture)
+    private fun toggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+        val cb = CheckBox(this).apply { text = label; isChecked = checked; setTextColor(white) }
+        cb.setOnCheckedChangeListener { _, value -> onChange(value) }
+        content.addView(cb)
     }
 
-    @Deprecated("Deprecated by Android API; retained for compatibility")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != requestCapture || resultCode != RESULT_OK || data == null) {
-            status.text = "Izin audio sistem dibatalkan."
-            return
+    private fun choiceRow(label: String, choices: List<String>) {
+        content.addView(TextView(this).apply { text = label; textSize = 12f; setTextColor(muted) })
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, choices)
+        content.addView(spinner)
+    }
+
+    private fun applyPreset(index: Int) {
+        val base = when (index) {
+            1 -> floatArrayOf(2f, 1f, 0f, 2f, 3f, 1f, 0f, 0f)
+            2 -> floatArrayOf(5f, 3f, -2f, 3f, 5f, 0f, 0f, 0f)
+            3 -> floatArrayOf(8f, 4f, 0f, -2f, 1f, 0f, 0f, 0f)
+            4 -> floatArrayOf(0f, 1f, 3f, 2f, 0f, 0f, 0f, 0f)
+            else -> FloatArray(8)
         }
-        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = manager.getMediaProjection(resultCode, data)
-        if (projection == null) {
-            status.text = "Gagal memperoleh izin capture audio."
-            return
-        }
-        startProcessing(projection!!)
+        gains.forEach { row -> for (i in row.indices) row[i] = base[i] }
+        saveState()
     }
 
-    private fun startProcessing(mp: MediaProjection) {
-        try {
-            val config = AudioPlaybackCaptureConfiguration.Builder(mp)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .build()
-            val format = AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                .build()
-            val min = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-            recorder = AudioRecord.Builder()
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(maxOf(min * 2, 8192))
-                .setAudioPlaybackCaptureConfig(config)
-                .build()
-            val outFormat = AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                .build()
-            player = AudioTrack.Builder()
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-                .setAudioFormat(outFormat)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(maxOf(min * 2, 8192))
-                .build()
-            if (recorder?.state != AudioRecord.STATE_INITIALIZED || player?.state != AudioTrack.STATE_INITIALIZED) {
-                status.text = "AudioRecord/AudioTrack gagal diinisialisasi."
-                cleanup()
-                return
-            }
-            running = true
-            recorder?.startRecording()
-            player?.play()
-            startButton.text = "PUTUSKAN AUDIO"
-            startButton.setOnClickListener { stopProcessing() }
-            status.text = "Capture aktif. Putar audio di aplikasi lain."
-            worker = thread(name = "DLMS-Audio-DSP") {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-                val input = ShortArray(2048)
-                val delayBuffer = ShortArray(sampleRate * 2 * 2)
-                var writeFrame = 0
-                val bandFiltersL = Array(5) { Biquad() }
-                val bandFiltersR = Array(5) { Biquad() }
-                val freqs = doubleArrayOf(60.0, 250.0, 1000.0, 4000.0, 12000.0)
-                while (running) {
-                    val count = recorder?.read(input, 0, input.size) ?: -1
-                    if (count <= 0) continue
-                    for (b in 0..4) {
-                        bandFiltersL[b].setPeak(freqs[b], eqGains[b].toDouble(), sampleRate.toDouble())
-                        bandFiltersR[b].setPeak(freqs[b], eqGains[b].toDouble(), sampleRate.toDouble())
-                    }
-                    for (i in 0 until count step 2) {
-                        val left = input[i].toDouble() / 32768.0
-                        val right = if (i + 1 < count) input[i + 1].toDouble() / 32768.0 else left
-                        var l = left
-                        var r = right
-                        for (b in 0..4) {
-                            l = bandFiltersL[b].process(l)
-                            r = bandFiltersR[b].process(r)
-                        }
-                        val frameCapacity = delayBuffer.size / 2
-                        val delayFrames = (delayMs * sampleRate / 1000).coerceIn(0, frameCapacity - 1)
-                        val readFrame = (writeFrame - delayFrames + frameCapacity) % frameCapacity
-                        val outIndex = (writeFrame % frameCapacity) * 2
-                        delayBuffer[outIndex] = (l.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
-                        delayBuffer[outIndex + 1] = (r.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
-                        val readIndex = readFrame * 2
-                        input[i] = delayBuffer[readIndex]
-                        if (i + 1 < count) input[i + 1] = delayBuffer[readIndex + 1]
-                        writeFrame = (writeFrame + 1) % frameCapacity
-                    }
-                    player?.write(input, 0, count)
-                }
-            }
-        } catch (e: Exception) {
-            status.text = "Gagal: ${e.message ?: e.javaClass.simpleName}"
-            cleanup()
-        }
+    private fun savePreset(index: Int) {
+        val editor = prefs.edit()
+        gains.forEachIndexed { i, row -> row.forEachIndexed { j, v -> editor.putFloat("preset_${index}_g_${i}_$j", v) } }
+        delays.forEachIndexed { i, v -> editor.putFloat("preset_${index}_d_$i", v) }
+        editor.apply()
     }
 
-    private fun stopProcessing() {
-        running = false
-        worker?.join(250)
-        cleanup()
-        startButton.text = "SAMBUNGKAN AUDIO SISTEM"
-        startButton.setOnClickListener { requestSystemAudio() }
-        status.text = "Status: terputus"
+    private fun loadState() {
+        gains.forEachIndexed { i, row -> row.indices.forEach { j -> row[j] = prefs.getFloat("g_${i}_$j", 0f) } }
+        delays.indices.forEach { delays[it] = prefs.getFloat("d_$it", 0f) }
+        outputGain.indices.forEach { outputGain[it] = prefs.getFloat("og_$it", 0f) }
+        mutedChannels.indices.forEach { mutedChannels[it] = prefs.getBoolean("mute_$it", false) }
+        polarity.indices.forEach { polarity[it] = prefs.getBoolean("pol_$it", false) }
     }
 
-    private fun cleanup() {
-        running = false
-        try { recorder?.stop() } catch (_: Exception) {}
-        try { player?.pause(); player?.flush(); player?.stop() } catch (_: Exception) {}
-        recorder?.release(); recorder = null
-        player?.release(); player = null
-        projection?.stop(); projection = null
+    private fun saveState() {
+        val e = prefs.edit()
+        gains.forEachIndexed { i, row -> row.forEachIndexed { j, v -> e.putFloat("g_${i}_$j", v) } }
+        delays.forEachIndexed { i, v -> e.putFloat("d_$i", v) }
+        outputGain.forEachIndexed { i, v -> e.putFloat("og_$i", v) }
+        mutedChannels.forEachIndexed { i, v -> e.putBoolean("mute_$i", v) }
+        polarity.forEachIndexed { i, v -> e.putBoolean("pol_$i", v) }
+        e.apply()
     }
-
-    override fun onDestroy() {
-        stopProcessing()
-        super.onDestroy()
-    }
-
-    private class Biquad {
-        private var b0 = 1.0; private var b1 = 0.0; private var b2 = 0.0
-        private var a1 = 0.0; private var a2 = 0.0
-        private var x1 = 0.0; private var x2 = 0.0; private var y1 = 0.0; private var y2 = 0.0
-        fun setPeak(freq: Double, gainDb: Double, fs: Double) {
-            val f = freq.coerceAtMost(fs * 0.45)
-            val a = Math.pow(10.0, gainDb / 40.0)
-            val w = 2.0 * PI * f / fs
-            val alpha = sin(w) / 2.0
-            val c = cos(w)
-            val a0 = 1.0 + alpha / a
-            b0 = (1.0 + alpha * a) / a0
-            b1 = (-2.0 * c) / a0
-            b2 = (1.0 - alpha * a) / a0
-            a1 = (-2.0 * c) / a0
-            a2 = (1.0 - alpha / a) / a0
-        }
-        fun process(x: Double): Double {
-            val y = b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2
-            x2=x1; x1=x; y2=y1; y1=y
-            return y
-        }
-    }
-    private fun Double.pow10(v: Double): Double = 10.0.pow(v)
 }
