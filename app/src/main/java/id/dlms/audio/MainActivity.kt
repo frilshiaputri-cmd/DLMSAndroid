@@ -153,7 +153,7 @@ class MainActivity : Activity() {
         }, matchWidth())
 
         sectionHeader("DELAY / AMBIENCE")
-        info("Efek ruang menggunakan Environmental Reverb Android. Dukungan efek bergantung pada perangkat.")
+        info("Efek ruang menggunakan Environmental Reverb Android, bukan echo berulang. Dukungan bergantung pada perangkat.")
         delayLabel = TextView(this).apply { setTextColor(white); textSize = 13f }
         body.addView(delayLabel)
         addSlider("Reflections / Delay", delayMs, 0, 250, " ms") { delayMs = it; applyReverb() }
@@ -278,9 +278,9 @@ class MainActivity : Activity() {
                 roomHFLevel = (-500).toShort()
                 reflectionsLevel = (-600).toShort()
                 reverbLevel = (-700).toShort()
-                reflectionsDelay = delayMs
-                reverbDelay = delayMs.coerceAtMost(200)
-                decayTime = decayMs
+                reflectionsDelay = delayMs.coerceIn(0, 300)
+                reverbDelay = delayMs.coerceIn(0, 100)
+                decayTime = decayMs.coerceIn(100, 7000)
                 decayHFRatio = 500.toShort()
                 enabled = true
             }
@@ -290,8 +290,8 @@ class MainActivity : Activity() {
     }
 
     private fun rebuildEqArea() {
-        if (!::body.isInitialized) return
-        buildUi()
+        // Avoid rebuilding the whole activity: it duplicates controls and resets playback.
+        if (equalizer == null && ::body.isInitialized) status.text = "EQ belum tersedia untuk sesi audio ini"
     }
 
     private fun addEqControls(eq: Equalizer?) {
@@ -347,9 +347,10 @@ class MainActivity : Activity() {
     private fun applyReverb() {
         try {
             reverb?.let {
-                it.reflectionsDelay = delayMs.coerceIn(0, 250)
-                it.reverbDelay = delayMs.coerceIn(0, 200)
-                it.decayTime = decayMs.coerceIn(100, 3000)
+                // Android applies separate valid ranges to reflections and reverb delay.
+                it.reflectionsDelay = delayMs.coerceIn(0, 300)
+                it.reverbDelay = delayMs.coerceIn(0, 100)
+                it.decayTime = decayMs.coerceIn(100, 7000)
                 it.enabled = true
             }
         } catch (_: Exception) {
