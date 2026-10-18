@@ -277,8 +277,8 @@ class MainActivity : Activity() {
                 roomHFLevel = (-500).toShort()
                 reflectionsLevel = (-600).toShort()
                 reverbLevel = (-700).toShort()
-                reflectionsDelay = delayMs.toShort()
-                reverbDelay = (delayMs.coerceAtMost(200)).toShort()
+                reflectionsDelay = delayMs
+                reverbDelay = delayMs.coerceAtMost(200)
                 decayTime = decayMs
                 decayHFRatio = 500.toShort()
                 enabled = true
@@ -346,8 +346,8 @@ class MainActivity : Activity() {
     private fun applyReverb() {
         try {
             reverb?.let {
-                it.reflectionsDelay = delayMs.coerceIn(0, 250).toShort()
-                it.reverbDelay = delayMs.coerceIn(0, 200).toShort()
+                it.reflectionsDelay = delayMs.coerceIn(0, 250)
+                it.reverbDelay = delayMs.coerceIn(0, 200)
                 it.decayTime = decayMs.coerceIn(100, 3000)
                 it.enabled = true
             }
