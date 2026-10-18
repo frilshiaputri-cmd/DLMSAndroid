@@ -176,6 +176,7 @@ class MainActivity : Activity() {
         }
         info("MP4 diputar sebagai audio saja. Semua kontrol hanya memengaruhi file yang diputar di DLMS Audio, bukan aplikasi lain.")
         updateLevelLabels()
+        setContentView(root)
     }
 
     private fun sectionHeader(text: String) {
