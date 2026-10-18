@@ -298,7 +298,7 @@ class MainActivity : Activity() {
         private var x1 = 0.0; private var x2 = 0.0; private var y1 = 0.0; private var y2 = 0.0
         fun setPeak(freq: Double, gainDb: Double, fs: Double) {
             val f = freq.coerceAtMost(fs * 0.45)
-            val a = 10.0.pow10(gainDb / 40.0)
+            val a = Math.pow(10.0, gainDb / 40.0)
             val w = 2.0 * PI * f / fs
             val alpha = sin(w) / 2.0
             val c = cos(w)
