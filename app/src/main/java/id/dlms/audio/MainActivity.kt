@@ -133,10 +133,10 @@ class MainActivity : Activity() {
         })
         leftLabel = TextView(this).apply { setTextColor(white); textSize = 13f }
         body.addView(leftLabel)
-        addLevelSlider(body, "LEFT / KIRI", 0.0f) { value -> leftLevel = value; applyStereo() }
+        addLevelSlider(body, "LEFT / KIRI", 1.0f) { value -> leftLevel = value; applyStereo() }
         rightLabel = TextView(this).apply { setTextColor(white); textSize = 13f }
         body.addView(rightLabel)
-        addLevelSlider(body, "RIGHT / KANAN", 0.0f) { value -> rightLevel = value; applyStereo() }
+        addLevelSlider(body, "RIGHT / KANAN", 1.0f) { value -> rightLevel = value; applyStereo() }
         addLevelSlider(body, "MASTER VOLUME", 1.0f) { value ->
             leftLevel = leftLevel.coerceIn(0f, 1f)
             rightLevel = rightLevel.coerceIn(0f, 1f)
