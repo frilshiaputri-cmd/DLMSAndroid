@@ -280,7 +280,7 @@ class MainActivity : Activity() {
                 reflectionsDelay = delayMs.toShort()
                 reverbDelay = (delayMs.coerceAtMost(200)).toShort()
                 decayTime = decayMs
-                decayHFRatio = 500
+                decayHFRatio = 500.toShort()
                 enabled = true
             }
         } catch (_: Exception) { reverb = null }
@@ -290,14 +290,7 @@ class MainActivity : Activity() {
 
     private fun rebuildEqArea() {
         if (!::body.isInitialized) return
-        // Rebuild only the EQ section by refreshing the screen after a player is prepared.
         buildUi()
-        val p = player
-        if (p != null) {
-            fileName.text = selectedUri?.lastPathSegment?.substringAfterLast('/') ?: "Audio"
-            timeLabel.text = "00:00 / ${formatTime(durationMs)}"
-            addEqControls(equalizer)
-        }
     }
 
     private fun addEqControls(eq: Equalizer?) {
