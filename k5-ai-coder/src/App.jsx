@@ -4,12 +4,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { Bot, Bug, Code2, Github, Send, Sparkles, Save, MessageSquare, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
-const starter = `function greet(name) {
-  return `Hello, ${name}!`;
-}
-
-console.log(greet("K5"));
-`;
+const starter = "function greet(name) {\n  return \"Hello, \" + name + \"!\";\n}\n\nconsole.log(greet(\"K5\"));\n";
 
 export default function App() {
   const [code, setCode] = useState(starter);
